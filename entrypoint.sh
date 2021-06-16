@@ -1,9 +1,22 @@
 function trigger_workflow {
-  echo "Triggering ${INPUT_EVENT_TYPE} in ${INPUT_OWNER}/${INPUT_REPO}"
+  echo "Triggering ${INPUT_EVENT_TYPE} (${INPUT_WORKFLOW_FILE}) in ${INPUT_OWNER}/${INPUT_REPO}"
 
-  last_runid=$(curl -s "https://api.github.com/repos/${INPUT_OWNER}/${INPUT_REPO}/actions/runs?event=repository_dispatch" \
+  workflow_id=$(curl -s "https://api.github.com/repos/${INPUT_OWNER}/${INPUT_REPO}/actions/workflows" \
         -H "Accept: application/vnd.github.v3+json" \
-        -H "Authorization: Bearer ${INPUT_TOKEN}" | jq '.workflow_runs[0].run_number')
+        -H "Authorization: Bearer ${INPUT_TOKEN}" | jq ".workflows[] | select(.path==\".github/workflows/${INPUT_WORKFLOW_FILE}\") | .id")
+
+  if [[ -n $workflow_id ]]; then
+    echo "Workflow id: $workflow_id"
+  else
+    echo "Failed: no workflow found"
+    exit 1
+  fi
+
+  last_run_number=$(curl -s "https://api.github.com/repos/${INPUT_OWNER}/${INPUT_REPO}/actions/runs?event=repository_dispatch" \
+        -H "Accept: application/vnd.github.v3+json" \
+        -H "Authorization: Bearer ${INPUT_TOKEN}" | jq "[ .workflow_runs[] | select(.workflow_id==$workflow_id)][0] | .run_number")
+
+  echo "Last run number: $last_run_number"
 
   resp=$(curl -X POST -s "https://api.github.com/repos/${INPUT_OWNER}/${INPUT_REPO}/dispatches" \
     -H "Accept: application/vnd.github.v3+json" \
@@ -28,19 +41,19 @@ function ensure_workflow {
   do
     current_runid=$(curl -s "https://api.github.com/repos/${INPUT_OWNER}/${INPUT_REPO}/actions/runs?event=repository_dispatch" \
       -H "Accept: application/vnd.github.v3+json" \
-      -H "Authorization: Bearer ${INPUT_TOKEN}" | jq '.workflow_runs[0].run_number')
+      -H "Authorization: Bearer ${INPUT_TOKEN}" | jq "[ .workflow_runs[] | select(.workflow_id==$workflow_id)][0] | .run_number")
 
-    [ "$current_runid" = $last_runid ] || break
+    [ "$current_runid" = $last_run_number ] || break
     sleep 2
   done
 
-  if [ "$current_runid" = "$last_runid" ]; then
+  if [ "$current_runid" = "$last_run_number" ]; then
     >&2 echo "Dispatch failed after timeout! Check the dispatched job has the correct syntax."
     exit 1
   fi
 
   # Pick up the workflow which appeared first (quite precise)
-  i=$(($current_runid - $last_runid - 1))
+  i=$(($current_runid - $last_run_number - 1))
   while [ $i -ge 0 ]; do
     workflow_runid=$(curl -s "https://api.github.com/repos/${INPUT_OWNER}/${INPUT_REPO}/actions/runs?event=repository_dispatch" \
       -H "Accept: application/vnd.github.v3+json" \
